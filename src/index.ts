@@ -7,8 +7,12 @@ import { BigNumber, providers, Wallet } from "ethers";
 import { Base } from "./engine/Base";
 import { checkSimulation, gasPriceToGwei, printTransactions } from "./utils";
 import { Approval721 } from "./engine/Approval721";
+import { TransferERC20 } from "./engine/TransferERC20";
+import { formatEther } from "ethers/lib/utils";
+import { TransferERC721 } from "./engine/TransferERC721";
 
 require('log-timestamp');
+require('dotenv').config();
 
 const BLOCKS_IN_FUTURE = 2;
 
@@ -39,9 +43,11 @@ if (RECIPIENT === "") {
 
 async function main() {
   const walletRelay = new Wallet(FLASHBOTS_RELAY_SIGNING_KEY)
-
+  
   // ======= UNCOMMENT FOR GOERLI ==========
-  const provider = new providers.InfuraProvider(5, process.env.INFURA_API_KEY || '');
+  // const provider = new providers.AlchemyProvider(5, process.env.ALCHEMY_API_KEY || '');
+  const provider = new providers.JsonRpcProvider(process.env.ETHEREUM_RPC_URL, 5);
+  
   const flashbotsProvider = await FlashbotsBundleProvider.create(provider, walletRelay, 'https://relay-goerli.epheph.com/');
   // ======= UNCOMMENT FOR GOERLI ==========
 
@@ -57,17 +63,23 @@ async function main() {
   const block = await provider.getBlock("latest")
 
   // ======= UNCOMMENT FOR ERC20 TRANSFER ==========
-  // const tokenAddress = "0x4da27a545c0c5B758a6BA100e3a049001de870f5";
+  // const tokenAddress = "0xdb435816e41eada055750369bc2662efbd465d72";
   // const engine: Base = new TransferERC20(provider, walletExecutor.address, RECIPIENT, tokenAddress);
   // ======= UNCOMMENT FOR ERC20 TRANSFER ==========
 
   // ======= UNCOMMENT FOR 721 Approval ==========
-  const HASHMASKS_ADDRESS = "0xC2C747E0F7004F9E8817Db2ca4997657a7746928";
-  const engine: Base = new Approval721(RECIPIENT, [HASHMASKS_ADDRESS]);
+  // const HASHMASKS_ADDRESS = "0xC2C747E0F7004F9E8817Db2ca4997657a7746928";
+  // const engine: Base = new Approval721(RECIPIENT, [HASHMASKS_ADDRESS]);
   // ======= UNCOMMENT FOR 721 Approval ==========
+  const tokens: any = [
+  ]
 
+  const engine = new TransferERC721(
+    walletExecutor.address, // owner address
+    RECIPIENT,              // receipient address
+    tokens,                 // array of [token address, token id] 
+  )
   const sponsoredTransactions = await engine.getSponsoredTransactions();
-
   const gasEstimates = await Promise.all(sponsoredTransactions.map(tx =>
     provider.estimateGas({
       ...tx,
@@ -76,14 +88,21 @@ async function main() {
   )
   const gasEstimateTotal = gasEstimates.reduce((acc, cur) => acc.add(cur), BigNumber.from(0))
 
-  const gasPrice = PRIORITY_GAS_PRICE.add(block.baseFeePerGas || 0);
+  const maxBaseFeeInFutureBlock = FlashbotsBundleProvider.getMaxBaseFeeInFutureBlock(
+    block.baseFeePerGas as BigNumber, 1
+  );
+  const priorityFee = GWEI.mul(2)
+
   const bundleTransactions: Array<FlashbotsBundleTransaction | FlashbotsBundleRawTransaction> = [
     {
       transaction: {
         to: walletExecutor.address,
-        gasPrice: gasPrice,
-        value: gasEstimateTotal.mul(gasPrice),
         gasLimit: 21000,
+        value: gasEstimateTotal.mul(maxBaseFeeInFutureBlock),
+        type: 2,
+        chainId: 5,
+        maxFeePerGas: priorityFee.add(maxBaseFeeInFutureBlock),
+        maxPriorityFeePerGas: priorityFee,
       },
       signer: walletSponsor
     },
@@ -91,8 +110,11 @@ async function main() {
       return {
         transaction: {
           ...transaction,
-          gasPrice: gasPrice,
           gasLimit: gasEstimates[txNumber],
+          type: 2,
+          chainId: 5,
+          maxFeePerGas: priorityFee.add(maxBaseFeeInFutureBlock),
+          maxPriorityFeePerGas: priorityFee,
         },
         signer: walletExecutor,
       }
@@ -107,7 +129,7 @@ async function main() {
   console.log(`Executor Account: ${walletExecutor.address}`)
   console.log(`Sponsor Account: ${walletSponsor.address}`)
   console.log(`Simulated Gas Price: ${gasPriceToGwei(simulatedGasPrice)} gwei`)
-  console.log(`Gas Price: ${gasPriceToGwei(gasPrice)} gwei`)
+  // console.log(`Gas Price: ${gasPriceToGwei(gasPrice)} gwei`)
   console.log(`Gas Used: ${gasEstimateTotal.toString()}`)
 
   provider.on('block', async (blockNumber) => {
